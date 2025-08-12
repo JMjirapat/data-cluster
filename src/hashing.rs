@@ -3,14 +3,14 @@ use std::{
     hash::{Hash, Hasher},
 };
 
-pub struct Hashing<T: Clone> {
+pub struct HashRing<T: Clone> {
     ring: BTreeMap<u64, T>,
     replicas: usize,
 }
 
-impl<T: Clone + std::fmt::Display> Hashing<T> {
+impl<T: Clone + std::fmt::Display> HashRing<T> {
     pub fn new(replicas: usize) -> Self {
-        Hashing {
+        HashRing {
             ring: BTreeMap::new(),
             replicas,
         }
@@ -47,6 +47,10 @@ impl<T: Clone + std::fmt::Display> Hashing<T> {
             .map(|(_, n)| n)
             .next()
             .or_else(|| self.ring.values().next())
+    }
+
+    pub fn nodes(&self) -> Vec<&T> {
+        self.ring.values().collect()
     }
 }
 

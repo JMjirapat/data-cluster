@@ -1,3 +1,5 @@
+use std::rc::Rc;
+
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 
@@ -9,8 +11,8 @@ async fn main() {
     let mut ring = HashRing::new(64);
 
     for i in 0..3 {
-        let storage = Storage::new(format!("storage_{}", i));
-        ring.add_node(&storage);
+        let storage = Rc::new(Storage::new(format!("storage_{}", i)));
+        ring.add_node(storage.clone());
     }
 
     let addr = "127.0.0.1:8080";

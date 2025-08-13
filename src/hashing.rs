@@ -1,14 +1,17 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashSet},
     hash::{Hash, Hasher},
+    rc::Rc,
 };
 
-pub struct HashRing<T: Clone> {
-    ring: BTreeMap<u64, T>,
+use crate::storage::StorageTrait;
+
+pub struct HashRing<T> {
+    ring: BTreeMap<u64, Rc<T>>,
     replicas: usize,
 }
 
-impl<T: Clone + std::fmt::Display> HashRing<T> {
+impl<T: StorageTrait> HashRing<T> {
     pub fn new(replicas: usize) -> Self {
         HashRing {
             ring: BTreeMap::new(),
@@ -20,23 +23,23 @@ impl<T: Clone + std::fmt::Display> HashRing<T> {
         self.ring.is_empty()
     }
 
-    pub fn add_node(&mut self, node: &T) {
+    pub fn add_node(&mut self, node: Rc<T>) {
         for i in 0..self.replicas {
-            let node_key = format!("{}_{}", node.clone(), i);
+            let node_key = format!("{}_{}", node.get_name(), i);
             let hash = hash64(&node_key);
             self.ring.insert(hash, node.clone());
         }
     }
 
-    pub fn remove_node(&mut self, node: T) {
+    pub fn remove_node(&mut self, node: Rc<T>) {
         for i in 0..self.replicas {
-            let node_key = format!("{}_{}", node.clone(), i);
+            let node_key = format!("{}_{}", node.get_name(), i);
             let hash = hash64(&node_key);
             self.ring.remove(&hash);
         }
     }
 
-    pub fn get(&self, key: &str) -> Option<&T> {
+    pub fn get(&self, key: &str) -> Option<Rc<T>> {
         if self.ring.is_empty() {
             return None;
         }
@@ -44,13 +47,24 @@ impl<T: Clone + std::fmt::Display> HashRing<T> {
         // First node with hash >= h, else wrap to first
         self.ring
             .range(h..)
-            .map(|(_, n)| n)
+            .map(|(_, n)| n.clone())
             .next()
-            .or_else(|| self.ring.values().next())
+            .or_else(|| self.ring.values().next().cloned())
     }
 
-    pub fn nodes(&self) -> Vec<&T> {
-        self.ring.values().collect()
+    pub fn nodes(&self) -> Vec<Rc<T>> {
+        // self.ring.values().cloned().collect()
+        let mut seen = HashSet::new();
+        self.ring
+            .values()
+            .filter_map(|node| {
+                if seen.insert(node.get_name().clone()) {
+                    Some(node.clone())
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 }
 

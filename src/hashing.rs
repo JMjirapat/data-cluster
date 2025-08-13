@@ -1,13 +1,14 @@
 use std::{
     collections::{BTreeMap, HashSet},
     hash::{Hash, Hasher},
-    rc::Rc,
+    sync::Arc,
 };
 
 use crate::storage::StorageTrait;
 
+#[derive(Debug, Clone)]
 pub struct HashRing<T> {
-    ring: BTreeMap<u64, Rc<T>>,
+    ring: BTreeMap<u64, Arc<T>>,
     replicas: usize,
 }
 
@@ -23,7 +24,7 @@ impl<T: StorageTrait> HashRing<T> {
         self.ring.is_empty()
     }
 
-    pub fn add_node(&mut self, node: Rc<T>) {
+    pub fn add_node(&mut self, node: Arc<T>) {
         for i in 0..self.replicas {
             let node_key = format!("{}_{}", node.get_name(), i);
             let hash = hash64(&node_key);
@@ -31,7 +32,7 @@ impl<T: StorageTrait> HashRing<T> {
         }
     }
 
-    pub fn remove_node(&mut self, node: Rc<T>) {
+    pub fn remove_node(&mut self, node: Arc<T>) {
         for i in 0..self.replicas {
             let node_key = format!("{}_{}", node.get_name(), i);
             let hash = hash64(&node_key);
@@ -39,7 +40,7 @@ impl<T: StorageTrait> HashRing<T> {
         }
     }
 
-    pub fn get(&self, key: &str) -> Option<Rc<T>> {
+    pub fn get(&self, key: &str) -> Option<Arc<T>> {
         if self.ring.is_empty() {
             return None;
         }
@@ -52,7 +53,7 @@ impl<T: StorageTrait> HashRing<T> {
             .or_else(|| self.ring.values().next().cloned())
     }
 
-    pub fn nodes(&self) -> Vec<Rc<T>> {
+    pub fn nodes(&self) -> Vec<Arc<T>> {
         // self.ring.values().cloned().collect()
         let mut seen = HashSet::new();
         self.ring

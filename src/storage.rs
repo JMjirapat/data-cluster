@@ -67,7 +67,10 @@ impl Storage {
     }
 }
 
-pub async fn handle_storage_command(cmd: StorageCmd, storage: Arc<Storage>) -> StorageResponse {
+pub async fn handle_storage_command(
+    cmd: StorageCmd,
+    storage: Arc<dyn StorageTrait>,
+) -> StorageResponse {
     match cmd {
         StorageCmd::Get { key } => {
             let value = storage.get(key).await;

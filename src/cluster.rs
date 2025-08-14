@@ -7,24 +7,34 @@ use std::{
 use crate::storage::StorageTrait;
 
 #[derive(Debug, Clone)]
-pub struct HashRing<T> {
-    ring: BTreeMap<u64, Arc<T>>,
+pub struct HashRing<Storage> {
+    ring: BTreeMap<u64, Arc<Storage>>,
     replicas: usize,
 }
 
-impl<T: StorageTrait> HashRing<T> {
+pub trait ClusterTrait<Storage: StorageTrait> {
+    fn is_empty(&self) -> bool;
+    fn add_node(&mut self, node: Arc<Storage>);
+    fn remove_node(&mut self, node: Arc<Storage>);
+    fn get(&self, key: &str) -> Option<Arc<Storage>>;
+    fn nodes(&self) -> Vec<Arc<Storage>>;
+}
+
+impl<Storage: StorageTrait> HashRing<Storage> {
     pub fn new(replicas: usize) -> Self {
         HashRing {
             ring: BTreeMap::new(),
             replicas,
         }
     }
+}
 
-    pub fn is_empty(&self) -> bool {
+impl<Storage: StorageTrait> ClusterTrait<Storage> for HashRing<Storage> {
+    fn is_empty(&self) -> bool {
         self.ring.is_empty()
     }
 
-    pub fn add_node(&mut self, node: Arc<T>) {
+    fn add_node(&mut self, node: Arc<Storage>) {
         for i in 0..self.replicas {
             let node_key = format!("{}_{}", node.get_name(), i);
             let hash = hash64(&node_key);
@@ -32,7 +42,7 @@ impl<T: StorageTrait> HashRing<T> {
         }
     }
 
-    pub fn remove_node(&mut self, node: Arc<T>) {
+    fn remove_node(&mut self, node: Arc<Storage>) {
         for i in 0..self.replicas {
             let node_key = format!("{}_{}", node.get_name(), i);
             let hash = hash64(&node_key);
@@ -40,7 +50,7 @@ impl<T: StorageTrait> HashRing<T> {
         }
     }
 
-    pub fn get(&self, key: &str) -> Option<Arc<T>> {
+    fn get(&self, key: &str) -> Option<Arc<Storage>> {
         if self.ring.is_empty() {
             return None;
         }
@@ -53,7 +63,7 @@ impl<T: StorageTrait> HashRing<T> {
             .or_else(|| self.ring.values().next().cloned())
     }
 
-    pub fn nodes(&self) -> Vec<Arc<T>> {
+    fn nodes(&self) -> Vec<Arc<Storage>> {
         // self.ring.values().cloned().collect()
         let mut seen = HashSet::new();
         self.ring

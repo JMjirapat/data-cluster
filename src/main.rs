@@ -1,28 +1,29 @@
-use std::sync::Arc;
-
-use data_cluster::pipe;
 use data_cluster::router::{RouterRequest, RouterResponse, handle_router_command};
+use data_cluster::shard::{Shard, ShardCmd, ShardResponse, handle_shard_command};
+use data_cluster::{pipe, router};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 
 use data_cluster::cluster::{ClusterTrait, HashRing};
-use data_cluster::storage::{Storage, StorageCmd, StorageResponse};
-use tokio::sync::oneshot;
+use data_cluster::storage::Storage;
 
 #[tokio::main]
 async fn main() {
-    let ring = Arc::new(tokio::sync::RwLock::new(HashRing::new(64)));
+    let mut ring = HashRing::new(64);
 
     for i in 0..3 {
-        let (tx, rx) = pipe::channel::<StorageCmd, StorageResponse>(1024);
-        let storage = Arc::new(Storage::new(format!("storage_{}", i), tx));
-        ring.write().await.add_node(storage.clone());
+        let (tx, rx) = pipe::channel::<ShardCmd, ShardResponse>(1024);
+        let shard = Shard::new(format!("shard_{}", i), tx);
+        ring.add_node(shard);
+        tokio::spawn(async move {
+            let storage = Storage::new();
+            handle_shard_command(storage, rx).await;
+        });
     }
 
     let (router_tx, router_rx) = pipe::channel::<RouterRequest, RouterResponse>(2048);
-    let ring_clone = Arc::clone(&ring);
     tokio::spawn(async move {
-        handle_router_command(router_rx, ring_clone).await;
+        handle_router_command(ring, router_rx).await;
     });
 
     let addr = "127.0.0.1:8080";
@@ -56,27 +57,24 @@ async fn main() {
                 match cmd.to_uppercase().as_str() {
                     "GET" => {
                         if let Some(key) = parts.next() {
-                            let (tx, rx) = oneshot::channel();
-                            let request = RouterRequest::Get {
-                                key: key.to_string(),
-                            };
-                            router_tx
-                                .send(pipe::Request {
-                                    msg: request,
-                                    resp: tx,
-                                })
-                                .await
-                                .unwrap();
-                            match rx.await {
-                                Ok(RouterResponse::Value(value)) => {
-                                    let _ = writer.write_all(format!("{value}\n").as_bytes()).await;
+                            let response = router::send(
+                                &router_tx,
+                                RouterRequest::Get {
+                                    key: key.to_string(),
+                                },
+                            )
+                            .await;
+                            match response {
+                                RouterResponse::Value(value) => {
+                                    let _ = writer.write_all(value.as_bytes()).await;
+                                    let _ = writer.write_all(b"\n").await;
                                 }
-                                Ok(RouterResponse::None) => {
-                                    let _ = writer.write_all(b"not found\n").await;
+                                RouterResponse::None => {
+                                    let _ = writer.write_all(b"ERR key not found\n").await;
                                 }
-                                Ok(RouterResponse::Err(err)) => {
-                                    let _ =
-                                        writer.write_all(format!("ERR {err}\n").as_bytes()).await;
+                                RouterResponse::Err(err) => {
+                                    let _ = writer.write_all(err.as_bytes()).await;
+                                    let _ = writer.write_all(b"\n").await;
                                 }
                                 _ => {
                                     let _ = writer.write_all(b"ERR unexpected response\n").await;
@@ -88,25 +86,21 @@ async fn main() {
                     }
                     "SET" => {
                         if let (Some(key), Some(value)) = (parts.next(), parts.next()) {
-                            let (tx, rx) = oneshot::channel();
-                            let request = RouterRequest::Set {
-                                key: key.to_string(),
-                                value: value.to_string(),
-                            };
-                            router_tx
-                                .send(pipe::Request {
-                                    msg: request,
-                                    resp: tx,
-                                })
-                                .await
-                                .unwrap();
-                            match rx.await {
-                                Ok(RouterResponse::Ok) => {
+                            let response = router::send(
+                                &router_tx,
+                                RouterRequest::Set {
+                                    key: key.to_string(),
+                                    value: value.to_string(),
+                                },
+                            )
+                            .await;
+                            match response {
+                                RouterResponse::Ok => {
                                     let _ = writer.write_all(b"OK\n").await;
                                 }
-                                Ok(RouterResponse::Err(err)) => {
-                                    let _ =
-                                        writer.write_all(format!("ERR {err}\n").as_bytes()).await;
+                                RouterResponse::Err(err) => {
+                                    let _ = writer.write_all(err.as_bytes()).await;
+                                    let _ = writer.write_all(b"\n").await;
                                 }
                                 _ => {
                                     let _ = writer.write_all(b"ERR unexpected response\n").await;
@@ -118,53 +112,40 @@ async fn main() {
                     }
                     "DELETE" => {
                         if let Some(key) = parts.next() {
-                            let (tx, rx) = oneshot::channel();
-                            let request = RouterRequest::Delete {
-                                key: key.to_string(),
-                            };
-                            router_tx
-                                .send(pipe::Request {
-                                    msg: request,
-                                    resp: tx,
-                                })
-                                .await
-                                .unwrap();
-                            match rx.await {
-                                Ok(RouterResponse::Ok) => {
+                            let response = router::send(
+                                &router_tx,
+                                RouterRequest::Delete {
+                                    key: key.to_string(),
+                                },
+                            )
+                            .await;
+                            match response {
+                                RouterResponse::Ok => {
                                     let _ = writer.write_all(b"OK\n").await;
                                 }
-                                Ok(RouterResponse::Err(err)) => {
-                                    let _ =
-                                        writer.write_all(format!("ERR {err}\n").as_bytes()).await;
+                                RouterResponse::Err(err) => {
+                                    let _ = writer.write_all(err.as_bytes()).await;
+                                    let _ = writer.write_all(b"\n").await;
                                 }
                                 _ => {
                                     let _ = writer.write_all(b"ERR unexpected response\n").await;
                                 }
                             }
                         } else {
-                            let _ = writer.write_all(b"ERR missing key or value\n").await;
+                            let _ = writer.write_all(b"ERR missing key\n").await;
                         }
                     }
                     "LIST" => {
-                        let (tx, rx) = oneshot::channel();
-                        let request = RouterRequest::List;
-                        router_tx
-                            .send(pipe::Request {
-                                msg: request,
-                                resp: tx,
-                            })
-                            .await
-                            .unwrap();
-                        match rx.await {
-                            Ok(RouterResponse::List(keys)) => {
-                                let response = keys.join(", ");
-                                let _ = writer.write_all(format!("{response}\n").as_bytes()).await;
+                        let response = router::send(&router_tx, RouterRequest::List).await;
+                        match response {
+                            RouterResponse::List(keys) => {
+                                let keys_str = keys.join(", ");
+                                let _ = writer.write_all(keys_str.as_bytes()).await;
+                                let _ = writer.write_all(b"\n").await;
                             }
-                            Ok(RouterResponse::None) => {
-                                let _ = writer.write_all(b"no keys found\n").await;
-                            }
-                            Ok(RouterResponse::Err(err)) => {
-                                let _ = writer.write_all(format!("ERR {err}\n").as_bytes()).await;
+                            RouterResponse::Err(err) => {
+                                let _ = writer.write_all(err.as_bytes()).await;
+                                let _ = writer.write_all(b"\n").await;
                             }
                             _ => {
                                 let _ = writer.write_all(b"ERR unexpected response\n").await;

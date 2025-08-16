@@ -1,26 +1,25 @@
 use std::{
     collections::{BTreeMap, HashSet},
     hash::{Hash, Hasher},
-    sync::Arc,
 };
 
-use crate::storage::StorageTrait;
+use crate::shard::Shard;
+
+pub trait ClusterTrait {
+    fn is_empty(&self) -> bool;
+    fn add_node(&mut self, node: Shard);
+    fn remove_node(&mut self, node: Shard);
+    fn get(&self, key: &str) -> Option<Shard>;
+    fn nodes(&self) -> Vec<Shard>;
+}
 
 #[derive(Debug, Clone)]
-pub struct HashRing<Storage> {
-    ring: BTreeMap<u64, Arc<Storage>>,
+pub struct HashRing {
+    ring: BTreeMap<u64, Shard>,
     replicas: usize,
 }
 
-pub trait ClusterTrait<Storage: StorageTrait> {
-    fn is_empty(&self) -> bool;
-    fn add_node(&mut self, node: Arc<Storage>);
-    fn remove_node(&mut self, node: Arc<Storage>);
-    fn get(&self, key: &str) -> Option<Arc<Storage>>;
-    fn nodes(&self) -> Vec<Arc<Storage>>;
-}
-
-impl<Storage: StorageTrait> HashRing<Storage> {
+impl HashRing {
     pub fn new(replicas: usize) -> Self {
         HashRing {
             ring: BTreeMap::new(),
@@ -29,12 +28,12 @@ impl<Storage: StorageTrait> HashRing<Storage> {
     }
 }
 
-impl<Storage: StorageTrait> ClusterTrait<Storage> for HashRing<Storage> {
+impl ClusterTrait for HashRing {
     fn is_empty(&self) -> bool {
         self.ring.is_empty()
     }
 
-    fn add_node(&mut self, node: Arc<Storage>) {
+    fn add_node(&mut self, node: Shard) {
         for i in 0..self.replicas {
             let node_key = format!("{}_{}", node.get_name(), i);
             let hash = hash64(&node_key);
@@ -42,7 +41,7 @@ impl<Storage: StorageTrait> ClusterTrait<Storage> for HashRing<Storage> {
         }
     }
 
-    fn remove_node(&mut self, node: Arc<Storage>) {
+    fn remove_node(&mut self, node: Shard) {
         for i in 0..self.replicas {
             let node_key = format!("{}_{}", node.get_name(), i);
             let hash = hash64(&node_key);
@@ -50,12 +49,11 @@ impl<Storage: StorageTrait> ClusterTrait<Storage> for HashRing<Storage> {
         }
     }
 
-    fn get(&self, key: &str) -> Option<Arc<Storage>> {
+    fn get(&self, key: &str) -> Option<Shard> {
         if self.ring.is_empty() {
             return None;
         }
         let h = hash64(key);
-        // First node with hash >= h, else wrap to first
         self.ring
             .range(h..)
             .map(|(_, n)| n.clone())
@@ -63,13 +61,12 @@ impl<Storage: StorageTrait> ClusterTrait<Storage> for HashRing<Storage> {
             .or_else(|| self.ring.values().next().cloned())
     }
 
-    fn nodes(&self) -> Vec<Arc<Storage>> {
-        // self.ring.values().cloned().collect()
+    fn nodes(&self) -> Vec<Shard> {
         let mut seen = HashSet::new();
         self.ring
             .values()
             .filter_map(|node| {
-                if seen.insert(node.get_name().clone()) {
+                if seen.insert(node.get_name()) {
                     Some(node.clone())
                 } else {
                     None

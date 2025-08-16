@@ -6,21 +6,23 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 
 use data_cluster::cluster::{ClusterTrait, HashRing};
-use data_cluster::storage::Storage;
-use tokio::sync::{RwLock, oneshot};
+use data_cluster::storage::{Storage, StorageCmd, StorageResponse};
+use tokio::sync::oneshot;
 
 #[tokio::main]
 async fn main() {
-    let ring = Arc::new(RwLock::new(HashRing::new(64)));
+    let ring = Arc::new(tokio::sync::RwLock::new(HashRing::new(64)));
 
     for i in 0..3 {
-        let storage = Arc::new(Storage::new(format!("storage_{}", i)));
+        let (tx, rx) = pipe::channel::<StorageCmd, StorageResponse>(1024);
+        let storage = Arc::new(Storage::new(format!("storage_{}", i), tx));
         ring.write().await.add_node(storage.clone());
     }
 
     let (router_tx, router_rx) = pipe::channel::<RouterRequest, RouterResponse>(2048);
+    let ring_clone = Arc::clone(&ring);
     tokio::spawn(async move {
-        handle_router_command(router_rx, Arc::clone(&ring)).await;
+        handle_router_command(router_rx, ring_clone).await;
     });
 
     let addr = "127.0.0.1:8080";

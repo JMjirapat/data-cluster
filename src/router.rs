@@ -1,8 +1,12 @@
-use std::sync::Arc;
+use std::{cell::RefCell, sync::Arc};
 
-use tokio::sync::{RwLock, mpsc::Receiver};
+use tokio::sync::{RwLock, mpsc::Receiver, oneshot};
 
-use crate::{cluster::ClusterTrait, pipe::Request, storage::StorageTrait};
+use crate::{
+    cluster::ClusterTrait,
+    pipe::Request,
+    storage::{StorageCmd, StorageResponse, StorageTrait},
+};
 
 #[derive(Debug, Clone)]
 pub enum RouterRequest {
@@ -33,11 +37,39 @@ pub async fn handle_router_command<C, S>(
         match msg {
             RouterRequest::Get { key } => {
                 if let Some(storage) = ring.read().await.get(&key) {
-                    let response = storage.get(key).await;
-                    if response.is_some() {
-                        let _ = resp.send(RouterResponse::Value(response.unwrap()));
-                    } else {
-                        let _ = resp.send(RouterResponse::None);
+                    let (tx, rx) = oneshot::channel();
+                    let request = Request {
+                        msg: StorageCmd::Get { key: key.clone() },
+                        resp: tx,
+                    };
+
+                    match storage.get_tx().try_send(request) {
+                        Ok(_) => {}
+                        Err(e) => {
+                            let _ = resp.send(RouterResponse::Err(e.to_string()));
+                            continue;
+                        }
+                    }
+                    match rx.await {
+                        Ok(response) => match response {
+                            StorageResponse::Value(value) => match value {
+                                Some(v) => {
+                                    let _ = resp.send(RouterResponse::Value(v));
+                                }
+                                None => {
+                                    let _ = resp.send(RouterResponse::None);
+                                }
+                            },
+                            _ => {
+                                let _ = resp
+                                    .send(RouterResponse::Err("Unexpected response".to_string()));
+                            }
+                        },
+                        Err(_) => {
+                            let _ = resp.send(RouterResponse::Err(
+                                "Failed to receive response".to_string(),
+                            ));
+                        }
                     }
                 } else {
                     let _ = resp.send(RouterResponse::Err("Storage not found".to_string()));
@@ -45,30 +77,93 @@ pub async fn handle_router_command<C, S>(
             }
             RouterRequest::Set { key, value } => {
                 if let Some(storage) = ring.read().await.get(&key) {
-                    storage.set(key, value).await;
-                    let _ = resp.send(RouterResponse::Ok);
+                    let (tx, rx) = oneshot::channel();
+                    let request = Request {
+                        msg: StorageCmd::Set { key, value },
+                        resp: tx,
+                    };
+
+                    match storage.get_tx().try_send(request) {
+                        Ok(_) => {}
+                        Err(e) => {
+                            let _ = resp.send(RouterResponse::Err(e.to_string()));
+                            continue;
+                        }
+                    }
+                    match rx.await {
+                        Ok(StorageResponse::Ok) => {
+                            let _ = resp.send(RouterResponse::Ok);
+                        }
+                        _ => {
+                            let _ =
+                                resp.send(RouterResponse::Err("Unexpected response".to_string()));
+                        }
+                    }
                 } else {
                     let _ = resp.send(RouterResponse::Err("Storage not found".to_string()));
                 }
             }
             RouterRequest::Delete { key } => {
                 if let Some(storage) = ring.read().await.get(&key) {
-                    storage.delete(key).await;
-                    let _ = resp.send(RouterResponse::Ok);
+                    let (tx, rx) = oneshot::channel();
+                    let request = Request {
+                        msg: StorageCmd::Delete { key },
+                        resp: tx,
+                    };
+
+                    match storage.get_tx().try_send(request) {
+                        Ok(_) => {}
+                        Err(e) => {
+                            let _ = resp.send(RouterResponse::Err(e.to_string()));
+                            continue;
+                        }
+                    }
+                    match rx.await {
+                        Ok(StorageResponse::Ok) => {
+                            let _ = resp.send(RouterResponse::Ok);
+                        }
+                        _ => {
+                            let _ =
+                                resp.send(RouterResponse::Err("Unexpected response".to_string()));
+                        }
+                    }
                 } else {
                     let _ = resp.send(RouterResponse::Err("Storage not found".to_string()));
                 }
             }
             RouterRequest::List => {
-                let mut all_keys = Vec::new();
-                for storage in ring.read().await.nodes() {
-                    let keys = storage.list().await;
-                    all_keys.extend(keys);
+                let nodes = ring.read().await.nodes();
+                let keys = RefCell::new(Vec::new());
+                let mut response = RouterResponse::List(keys.borrow().clone());
+                for storage in nodes {
+                    let (tx, rx) = oneshot::channel();
+                    let request = Request {
+                        msg: StorageCmd::List,
+                        resp: tx,
+                    };
+                    match storage.get_tx().try_send(request) {
+                        Ok(_) => {}
+                        Err(e) => {
+                            response = RouterResponse::Err(e.to_string());
+                            break;
+                        }
+                    }
+                    match rx.await {
+                        Ok(StorageResponse::List(Some(node_keys))) => {
+                            keys.borrow_mut().extend(node_keys);
+                        }
+                        _ => {
+                            continue;
+                        }
+                    }
                 }
-                if all_keys.is_empty() {
-                    let _ = resp.send(RouterResponse::None);
-                } else {
-                    let _ = resp.send(RouterResponse::List(all_keys));
+                match response {
+                    RouterResponse::List(keys) => {
+                        let _ = resp.send(RouterResponse::List(keys));
+                    }
+                    _ => {
+                        let _ = resp.send(response);
+                    }
                 }
             }
         }

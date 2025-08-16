@@ -1,5 +1,7 @@
-use std::{collections::HashMap, sync::Arc};
-use tokio::sync::Mutex;
+use std::collections::HashMap;
+use tokio::sync::{Mutex, mpsc};
+
+use crate::pipe::Request;
 
 #[derive(Debug)]
 pub enum StorageCmd {
@@ -19,74 +21,78 @@ pub enum StorageResponse {
 #[derive(Debug)]
 pub struct Storage {
     pub name: String,
+    pub tx: mpsc::Sender<Request<StorageCmd, StorageResponse>>,
     pub data: Mutex<HashMap<String, String>>,
 }
 
-#[async_trait::async_trait]
 pub trait StorageTrait {
     fn get_name(&self) -> String;
+    fn get_tx(&self) -> mpsc::Sender<Request<StorageCmd, StorageResponse>>;
     async fn get(&self, key: String) -> Option<String>;
     async fn set(&self, key: String, value: String);
     async fn delete(&self, key: String);
     async fn list(&self) -> Vec<String>;
 }
 
-#[async_trait::async_trait]
 impl StorageTrait for Storage {
     fn get_name(&self) -> String {
         self.name.clone()
     }
 
+    fn get_tx(&self) -> mpsc::Sender<Request<StorageCmd, StorageResponse>> {
+        self.tx.clone()
+    }
+
     async fn get(&self, key: String) -> Option<String> {
-        let data = self.data.lock().await;
-        data.get(&key).cloned()
+        self.data.lock().await.get(&key).cloned()
     }
 
     async fn set(&self, key: String, value: String) {
-        let mut data = self.data.lock().await;
-        data.insert(key, value);
+        self.data.lock().await.insert(key, value);
     }
 
     async fn delete(&self, key: String) {
-        let mut data = self.data.lock().await;
-        data.remove(&key);
+        self.data.lock().await.remove(&key);
     }
 
     async fn list(&self) -> Vec<String> {
-        let data = self.data.lock().await;
-        data.keys().cloned().collect()
+        self.data.lock().await.keys().cloned().collect()
     }
 }
 
 impl Storage {
-    pub fn new(name: String) -> Self {
+    pub fn new(name: String, tx: mpsc::Sender<Request<StorageCmd, StorageResponse>>) -> Self {
         Storage {
             name,
+            tx,
             data: Mutex::new(HashMap::new()),
         }
     }
 }
 
 pub async fn handle_storage_command(
-    cmd: StorageCmd,
-    storage: Arc<dyn StorageTrait>,
-) -> StorageResponse {
-    match cmd {
-        StorageCmd::Get { key } => {
-            let value = storage.get(key).await;
-            StorageResponse::Value(value)
-        }
-        StorageCmd::Set { key, value } => {
-            storage.set(key, value).await;
-            StorageResponse::Ok
-        }
-        StorageCmd::Delete { key } => {
-            storage.delete(key).await;
-            StorageResponse::Ok
-        }
-        StorageCmd::List => {
-            let keys: Vec<String> = storage.list().await;
-            StorageResponse::List(Some(keys))
-        }
+    storage: Storage,
+    mut rx: mpsc::Receiver<Request<StorageCmd, StorageResponse>>,
+) {
+    while let Some(Request { msg, resp }) = rx.recv().await {
+        let response = match msg {
+            StorageCmd::Get { key } => {
+                let value = storage.get(key);
+                StorageResponse::Value(value.await)
+            }
+            StorageCmd::Set { key, value } => {
+                storage.set(key, value).await;
+                StorageResponse::Ok
+            }
+            StorageCmd::Delete { key } => {
+                storage.delete(key).await;
+                StorageResponse::Ok
+            }
+            StorageCmd::List => {
+                let keys = storage.list();
+                StorageResponse::List(Some(keys.await))
+            }
+        };
+        let _ = resp.send(response);
     }
 }

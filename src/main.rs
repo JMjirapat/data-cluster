@@ -1,6 +1,7 @@
 use data_cluster::router::{RouterRequest, RouterResponse, handle_router_command};
 use data_cluster::shard::{Shard, ShardCmd, ShardResponse, handle_shard_command};
 use data_cluster::{pipe, router};
+use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 
@@ -23,7 +24,7 @@ async fn main() {
 
     let (router_tx, router_rx) = pipe::channel::<RouterRequest, RouterResponse>(2048);
     tokio::spawn(async move {
-        handle_router_command(ring, router_rx).await;
+        handle_router_command(Arc::new(ring), router_rx).await;
     });
 
     let addr = "127.0.0.1:8080";
@@ -65,6 +66,9 @@ async fn main() {
                             )
                             .await;
                             match response {
+                                RouterResponse::Busy | RouterResponse::ShardBusy => {
+                                    let _ = writer.write_all(b"BUSY\n").await;
+                                }
                                 RouterResponse::Value(value) => {
                                     let _ = writer.write_all(value.as_bytes()).await;
                                     let _ = writer.write_all(b"\n").await;
@@ -95,6 +99,9 @@ async fn main() {
                             )
                             .await;
                             match response {
+                                RouterResponse::Busy | RouterResponse::ShardBusy => {
+                                    let _ = writer.write_all(b"BUSY\n").await;
+                                }
                                 RouterResponse::Ok => {
                                     let _ = writer.write_all(b"OK\n").await;
                                 }
@@ -120,6 +127,9 @@ async fn main() {
                             )
                             .await;
                             match response {
+                                RouterResponse::Busy | RouterResponse::ShardBusy => {
+                                    let _ = writer.write_all(b"BUSY\n").await;
+                                }
                                 RouterResponse::Ok => {
                                     let _ = writer.write_all(b"OK\n").await;
                                 }
@@ -138,6 +148,9 @@ async fn main() {
                     "LIST" => {
                         let response = router::send(&router_tx, RouterRequest::List).await;
                         match response {
+                            RouterResponse::Busy | RouterResponse::ShardBusy => {
+                                let _ = writer.write_all(b"BUSY\n").await;
+                            }
                             RouterResponse::List(keys) => {
                                 let keys_str = keys.join(", ");
                                 let _ = writer.write_all(keys_str.as_bytes()).await;
